@@ -3,7 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 import os
 
@@ -18,86 +18,84 @@ processed_games = set()
 total_analyzed = 0
 
 # ============================================
-# НАСТРОЙКИ ПАРСИНГА (КАЖДЫЕ 2 МИНУТЫ)
+# НАСТРОЙКИ ВРЕМЕНИ (МСК +3)
 # ============================================
-HEADERS = {'User-Agent': 'Mozilla/5.0'}
-SITES = [
-    {'name': '⚡ FlashScore', 'url': 'https://www.flashscorekz.com/basketball/'},
-    {'name': '📊 Sport24', 'url': 'https://sport24.ru/basketball'},
-    {'name': '🏀 Sports.ru', 'url': 'https://www.sports.ru/basketball/'}
-]
+def get_moscow_time():
+    return datetime.utcnow() + timedelta(hours=3)
 
-def parse_basketball():
-    """Парсинг баскетбольных матчей со всех сайтов"""
+# ============================================
+# ПАРСИНГ FLASHSCORE (РАБОЧАЯ ВЕРСИЯ)
+# ============================================
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+}
+
+def parse_flashscore():
+    """Парсинг live матчей с FlashScore"""
     global total_analyzed
-    found = 0
     
-    print(f"\n🔍 {datetime.now().strftime('%H:%M:%S')} - Начинаю парсинг...")
-    
-    for site in SITES:
-        try:
-            print(f"   • {site['name']}...", end=' ')
-            response = requests.get(site['url'], headers=HEADERS, timeout=10)
+    try:
+        url = "https://www.flashscorekz.com/basketball/"
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            if response.status_code == 200:
-                text = response.text
-                # Ищем матчи: Команда - Команда 24:22
-                pattern = r'([А-Яа-яA-Za-z\s]{3,30}?)\s*[-–]\s*([А-Яа-яA-Za-z\s]{3,30}?)\s*(\d+)[:-](\d+)'
-                matches = re.findall(pattern, text)
-                
-                for match in matches:
-                    try:
-                        home = match[0].strip()
-                        away = match[1].strip()
-                        score1 = int(match[2])
-                        score2 = int(match[3])
+            # Ищем все матчи
+            matches = soup.find_all('div', class_='event__match')
+            
+            for match in matches:
+                try:
+                    # Парсим команды
+                    home = match.find('div', class_='event__homeParticipant')
+                    away = match.find('div', class_='event__awayParticipant')
+                    
+                    # Парсим счет
+                    scores = match.find_all('span', class_='event__score')
+                    
+                    if home and away and len(scores) >= 2:
+                        home_name = home.text.strip()
+                        away_name = away.text.strip()
                         
-                        # Создаем уникальный ID матча
-                        game_id = f"{home}_{away}_{datetime.now().strftime('%Y%m%d%H')}"
+                        home_score = int(scores[0].text.strip())
+                        away_score = int(scores[1].text.strip())
                         
-                        # Проверяем, не отправляли ли уже этот матч
+                        # Создаем ID матча
+                        game_id = f"{home_name}_{away_name}_{get_moscow_time().strftime('%Y%m%d%H')}"
+                        
                         if game_id not in processed_games:
-                            total_score = score1 + score2
+                            total = home_score + away_score
                             
-                            # Проверяем, похоже ли на 1-ю четверть (20-80 очков)
-                            if 20 <= total_score <= 80:
-                                is_even = total_score % 2 == 0
+                            # Проверяем что это 1-я четверть (сумма 20-70 очков)
+                            if 20 <= total <= 70:
+                                is_even = total % 2 == 0
                                 parity = "ЧЕТНАЯ 🟢" if is_even else "НЕЧЕТНАЯ 🔴"
                                 
-                                # Формируем красивое сообщение
                                 msg = (
-                                    f"🏀 *{site['name'].replace('⚡', '').replace('📊', '').replace('🏀', '')}*\n"
+                                    f"🏀 *{home_name} vs {away_name}*\n"
                                     f"━━━━━━━━━━━━━━━━━━━━\n"
                                     f"📊 *1-я ЧЕТВЕРТЬ ЗАВЕРШЕНА!*\n\n"
-                                    f"┌─ {home}\n"
+                                    f"┌─ {home_name}\n"
                                     f"│ vs\n"
-                                    f"└─ {away}\n"
+                                    f"└─ {away_name}\n"
                                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📈 Счет: *{score1}:{score2}*\n"
-                                    f"📊 Всего очков: *{total_score}*\n"
+                                    f"📈 Счет: *{home_score}:{away_score}*\n"
+                                    f"📊 Всего очков: *{total}*\n"
                                     f"🎯 Результат: *{parity}*\n"
                                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+                                    f"🕐 МСК: {get_moscow_time().strftime('%H:%M:%S')}"
                                 )
                                 
                                 bot.send_message(CHAT_ID, msg, parse_mode='Markdown')
                                 processed_games.add(game_id)
                                 total_analyzed += 1
-                                found += 1
-                                print(f"\n      ✅ {home} vs {away} - {parity}")
+                                print(f"✅ {home_name} vs {away_name} - {parity}")
                                 
-                    except:
-                        continue
-                print(f" ({len(matches)} матчей)")
-            else:
-                print("❌")
-        except Exception as e:
-            print(f"❌ Ошибка")
-        time.sleep(1)
-    
-    if found > 0:
-        print(f"📊 Найдено новых матчей: {found}")
-    print(f"📈 Всего проанализировано: {total_analyzed}")
+                except Exception as e:
+                    continue
+                    
+    except Exception as e:
+        print(f"Ошибка FlashScore: {e}")
 
 # ============================================
 # КОМАНДЫ БОТА
@@ -107,13 +105,10 @@ def start(message):
     bot.reply_to(message, 
         "🏀 *БАСКЕТБОЛЬНЫЙ МОНИТОР*\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "✅ *РЕЖИМ РАБОТЫ:*\n"
-        "• Парсинг каждые 2 минуты\n"
-        "• 3 сайта одновременно\n"
-        "• Все лиги мира\n\n"
-        "📊 *ДОСТУПНЫЕ КОМАНДЫ:*\n"
-        "• /status - статистика работы\n"
-        "• /sites - список сайтов\n"
+        "✅ Парсинг FlashScore\n"
+        "✅ Время: Московское\n\n"
+        "📊 *Команды:*\n"
+        "• /status - статистика\n"
         "• /test - тест уведомления\n"
         "━━━━━━━━━━━━━━━━━━━━",
         parse_mode='Markdown'
@@ -121,33 +116,20 @@ def start(message):
 
 @bot.message_handler(commands=['status'])
 def status(message):
-    """Показывает статистику работы"""
     bot.reply_to(message, 
         f"📊 *СТАТИСТИКА РАБОТЫ*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"✅ Проанализировано матчей: *{total_analyzed}*\n"
-        f"📈 В базе данных: {len(processed_games)} матчей\n"
-        f"🕐 Последняя проверка: {datetime.now().strftime('%H:%M:%S')}\n"
+        f"📈 В базе данных: {len(processed_games)}\n"
+        f"🕐 МСК: {get_moscow_time().strftime('%H:%M:%S')}\n"
         f"━━━━━━━━━━━━━━━━━━━━",
-        parse_mode='Markdown'
-    )
-
-@bot.message_handler(commands=['sites'])
-def sites(message):
-    """Показывает список отслеживаемых сайтов"""
-    sites_list = "\n".join([f"• {s['name']}" for s in SITES])
-    bot.reply_to(message, 
-        f"🌐 *ОТСЛЕЖИВАЕМЫЕ САЙТЫ*\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"{sites_list}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏰ Проверка каждые 2 минуты",
         parse_mode='Markdown'
     )
 
 @bot.message_handler(commands=['test'])
 def test(message):
-    """Тестовое уведомление"""
+    # Тестовый матч
+    test_time = get_moscow_time()
     msg = (
         "🏀 *ТЕСТОВОЕ УВЕДОМЛЕНИЕ*\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -156,46 +138,46 @@ def test(message):
         "Счет: 24:22\n"
         "Всего очков: *46*\n"
         "Результат: *ЧЕТНАЯ 🟢*\n"
-        "━━━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕐 МСК: {test_time.strftime('%H:%M:%S')}"
     )
     bot.send_message(CHAT_ID, msg, parse_mode='Markdown')
     bot.reply_to(message, "✅ Тестовое уведомление отправлено!")
 
 # ============================================
-# ОСНОВНОЙ ЦИКЛ (КАЖДЫЕ 2 МИНУТЫ)
+# ОСНОВНОЙ ЦИКЛ
 # ============================================
 def monitoring_loop():
-    """Бесконечный цикл мониторинга каждые 2 минуты"""
+    """Проверка каждые 2 минуты"""
     print("\n" + "="*60)
-    print("🏀 БАСКЕТБОЛЬНЫЙ МОНИТОР ЗАПУЩЕН")
+    print("🏀 БАСКЕТБОЛЬНЫЙ МОНИТОР")
     print("="*60)
-    print(f"📊 Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🚀 Старт: {get_moscow_time().strftime('%Y-%m-%d %H:%M:%S')} МСК")
     print("⏰ Интервал: 2 минуты")
-    print("🌐 Сайтов: 3")
     print("="*60)
     
     while True:
         try:
-            parse_basketball()
-            print(f"\n⏰ Следующая проверка через 2 минуты...")
-            print("-"*60)
-            time.sleep(120)  # 2 минуты
+            print(f"\n🔍 {get_moscow_time().strftime('%H:%M:%S')} МСК - Проверка...")
+            parse_flashscore()
+            print(f"📊 Всего матчей: {total_analyzed}")
+            print(f"⏰ Следующая через 2 минуты...")
+            time.sleep(120)
         except Exception as e:
-            print(f"❌ Ошибка в цикле: {e}")
+            print(f"Ошибка: {e}")
             time.sleep(60)
 
 # ============================================
 # ЗАПУСК
 # ============================================
 if __name__ == "__main__":
-    # Запускаем мониторинг в фоновом потоке
-    monitor_thread = threading.Thread(target=monitoring_loop)
-    monitor_thread.daemon = True
-    monitor_thread.start()
+    thread = threading.Thread(target=monitoring_loop)
+    thread.daemon = True
+    thread.start()
     
-    print("\n🚀 Бот запускается...")
-    print("✅ Команды: /start, /status, /sites, /test")
+    print("\n🚀 Бот запущен!")
+    print(f"✅ Время МСК: {get_moscow_time().strftime('%H:%M:%S')}")
+    print("✅ Команды: /start, /status, /test")
     print("="*60)
     
-    # Запускаем бота
-    bot.polling(none_stop=True)
+    bot.infinity_polling()
